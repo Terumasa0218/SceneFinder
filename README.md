@@ -7,9 +7,10 @@ The current implementation does not download, store, or redistribute YouTube vid
 - YouTube public oEmbed metadata
 - YouTube Data API metadata, tags, and top comments when `YOUTUBE_API_KEY` is set
 - Manual hints copied from comments or subtitles
-- Screenshot-based title hints when `OPENAI_API_KEY` is set
 - TMDB title search and Japan watch-provider candidates when `TMDB_API_KEY` is set
 - A small local fallback catalog for early UI testing
+
+Paid AI is disabled by default. SceneFinder should first prove quality with free or low-cost signals before enabling OpenAI or any other paid model.
 
 The Web MVP also stores recent analysis results in browser local storage and shows a device-local title ranking. This is a prototype for future anonymized aggregate trend analytics.
 
@@ -39,12 +40,18 @@ Copy `.env.example` to `.env.local` and fill the keys you want to test.
 
 ```bash
 YOUTUBE_API_KEY=
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
 TMDB_API_KEY=
 ```
 
-The app works without keys, but real precision requires the external signals above.
+The app works without keys. Better free/low-cost precision comes from YouTube Data API and TMDB.
+
+Paid AI is opt-in only:
+
+```bash
+ENABLE_PAID_AI=true
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5-mini
+```
 
 ## Scripts
 

@@ -27,7 +27,7 @@ export type SceneFinderClassification = {
   label: SceneFinderContentLabel;
   confidence: number;
   reason: string;
-  source: "heuristic" | "openai";
+  source: "heuristic" | "paid-ai";
 };
 
 export type SceneFinderCandidate = {
@@ -63,7 +63,7 @@ export type SceneFinderAnalysis = {
   classification: SceneFinderClassification;
   apiStatus: {
     youtube: boolean;
-    openai: boolean;
+    paidAi: boolean;
     tmdb: boolean;
   };
   signals: SceneFinderSignal[];
@@ -229,7 +229,7 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     status: input.manualHint ? "ok" : "missing",
   });
 
-  const understanding = await understandSceneWithOpenAI(input, metadata, notes);
+  const understanding = await understandSceneWithPaidAi(input, metadata, notes);
   let classification = understanding.classification ?? classifyWithHeuristics(metadata);
 
   signals.push({
@@ -240,8 +240,8 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
 
   const aiTitles = understanding.titles;
   signals.push({
-    label: "AI Vision/推定",
-    value: aiTitles.length ? aiTitles.join(" / ") : "OPENAI_API_KEY未設定または候補なし",
+    label: "有料AI",
+    value: aiTitles.length ? aiTitles.join(" / ") : "未使用",
     status: aiTitles.length ? "ok" : "missing",
   });
 
@@ -273,8 +273,8 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     notes.push("YOUTUBE_API_KEYを設定すると、概要欄・タグ・上位コメントも解析できます。");
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    notes.push("OPENAI_API_KEYを設定しスクショを追加すると、画面特徴から候補を増やせます。");
+  if (!isPaidAiEnabled()) {
+    notes.push("有料AIは未使用です。無料/低コスト運用ではYouTube API、TMDB、コメント/概要欄、手入力ヒントを優先します。");
   }
 
   return {
@@ -285,7 +285,7 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     classification,
     apiStatus: {
       youtube: Boolean(process.env.YOUTUBE_API_KEY),
-      openai: Boolean(process.env.OPENAI_API_KEY),
+      paidAi: isPaidAiEnabled(),
       tmdb: Boolean(process.env.TMDB_API_KEY),
     },
     signals,
@@ -342,12 +342,12 @@ async function fetchTopComments(videoId: string): Promise<string[]> {
     .slice(0, 8);
 }
 
-async function understandSceneWithOpenAI(
+async function understandSceneWithPaidAi(
   input: SceneFinderInput,
   metadata: SceneFinderAnalysis["metadata"],
   notes: string[],
 ): Promise<SceneUnderstanding> {
-  if (!process.env.OPENAI_API_KEY) return { titles: [] };
+  if (!isPaidAiEnabled()) return { titles: [] };
 
   const prompt = [
     "You classify YouTube Shorts and identify Japanese/international movies, TV dramas, and anime from clues.",
@@ -493,7 +493,7 @@ function parseClassification(value: unknown): SceneFinderClassification | undefi
     label,
     confidence: clampConfidence(Number(item.confidence)),
     reason: typeof item.reason === "string" ? item.reason.slice(0, 140) : "AIが分類しました。",
-    source: "openai",
+    source: "paid-ai",
   };
 }
 
@@ -746,6 +746,10 @@ function normalize(value: string) {
 
 function normalizeForClassification(value: string) {
   return value.toLowerCase().replace(/[＃#]/g, " ").replace(/\s+/g, " ");
+}
+
+function isPaidAiEnabled() {
+  return process.env.ENABLE_PAID_AI === "true" && Boolean(process.env.OPENAI_API_KEY);
 }
 
 function clampConfidence(value: number) {

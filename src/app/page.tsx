@@ -759,7 +759,7 @@ export default function Home() {
               <div className="space-y-2">
                 {[
                   ["YouTube", analysis?.apiStatus.youtube, "概要欄・タグ・上位コメント"],
-                  ["OpenAI", analysis?.apiStatus.openai, "対象判定・スクショ理解"],
+                  ["有料AI", analysis?.apiStatus.paidAi, "明示ON時のみ使用"],
                   ["TMDB", analysis?.apiStatus.tmdb, "作品DB・日本の配信候補"],
                 ].map(([label, enabled, detail]) => (
                   <div key={label as string} className="flex items-center justify-between gap-3 rounded-2xl bg-[#f7f7f4] p-3">
