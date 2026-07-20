@@ -15,6 +15,15 @@ The Web MVP also stores recent analysis results in browser local storage and sho
 
 For precision work, users can mark the top candidate as correct or incorrect and enter the correct title. That feedback is stored locally for now and can later become the seed data for scoring and evaluation.
 
+## Precision Loop
+
+The next evaluation loop is:
+
+1. Decide whether a Shorts URL is target content: movie, TV drama, or anime.
+2. Exclude non-target content: YouTuber videos, variety shows, news, music, sports, TikTok originals, and unrelated clips.
+3. If it is target content, identify the exact title.
+4. Store user feedback for correct/incorrect predictions and tune scoring from those examples.
+
 ## Run Locally
 
 ```bash

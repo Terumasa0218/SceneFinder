@@ -10,6 +10,26 @@ export type SceneFinderSignal = {
   status: "ok" | "missing" | "warning";
 };
 
+export type SceneFinderContentLabel =
+  | "映画"
+  | "ドラマ"
+  | "アニメ"
+  | "YouTuber動画"
+  | "バラエティ"
+  | "ニュース"
+  | "TikTokオリジナル"
+  | "音楽"
+  | "スポーツ"
+  | "その他";
+
+export type SceneFinderClassification = {
+  isTarget: boolean;
+  label: SceneFinderContentLabel;
+  confidence: number;
+  reason: string;
+  source: "heuristic" | "openai";
+};
+
 export type SceneFinderCandidate = {
   id: string;
   title: string;
@@ -40,6 +60,12 @@ export type SceneFinderAnalysis = {
     topComments: string[];
   };
   searchQueries: string[];
+  classification: SceneFinderClassification;
+  apiStatus: {
+    youtube: boolean;
+    openai: boolean;
+    tmdb: boolean;
+  };
   signals: SceneFinderSignal[];
   candidates: SceneFinderCandidate[];
   notes: string[];
@@ -70,6 +96,11 @@ type TMDBSearchResult = {
   genre_ids?: number[];
   popularity?: number;
   vote_count?: number;
+};
+
+type SceneUnderstanding = {
+  titles: string[];
+  classification?: SceneFinderClassification;
 };
 
 const providerAliases = new Map([
@@ -198,7 +229,16 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     status: input.manualHint ? "ok" : "missing",
   });
 
-  const aiTitles = await proposeTitlesWithOpenAI(input, metadata, notes);
+  const understanding = await understandSceneWithOpenAI(input, metadata, notes);
+  let classification = understanding.classification ?? classifyWithHeuristics(metadata);
+
+  signals.push({
+    label: "対象判定",
+    value: `${classification.label} / ${classification.confidence}%`,
+    status: classification.isTarget ? "ok" : "warning",
+  });
+
+  const aiTitles = understanding.titles;
   signals.push({
     label: "AI Vision/推定",
     value: aiTitles.length ? aiTitles.join(" / ") : "OPENAI_API_KEY未設定または候補なし",
@@ -206,8 +246,20 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
   });
 
   const searchQueries = buildSearchQueries(metadata, aiTitles);
-  const tmdbCandidates = await searchTMDBCandidates(searchQueries, metadata, notes);
-  const localCandidates = searchLocalCatalog(searchQueries, metadata);
+  const strongWorkHint = findStrongWorkHint(searchQueries);
+  if (!classification.isTarget && strongWorkHint) {
+    classification = {
+      isTarget: true,
+      label: strongWorkHint.type,
+      confidence: Math.max(classification.confidence, 76),
+      reason: `対象外らしい語もありますが、作品名ヒント「${strongWorkHint.title}」が強く一致しました。`,
+      source: classification.source,
+    };
+  }
+
+  const shouldSearchWorks = classification.isTarget || Boolean(strongWorkHint);
+  const tmdbCandidates = shouldSearchWorks ? await searchTMDBCandidates(searchQueries, metadata, notes) : [];
+  const localCandidates = shouldSearchWorks ? searchLocalCatalog(searchQueries, metadata) : [];
 
   const merged = dedupeCandidates([...tmdbCandidates, ...localCandidates])
     .sort((a, b) => b.confidence - a.confidence)
@@ -230,6 +282,12 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     videoId,
     metadata,
     searchQueries,
+    classification,
+    apiStatus: {
+      youtube: Boolean(process.env.YOUTUBE_API_KEY),
+      openai: Boolean(process.env.OPENAI_API_KEY),
+      tmdb: Boolean(process.env.TMDB_API_KEY),
+    },
     signals,
     candidates: merged,
     notes,
@@ -284,17 +342,19 @@ async function fetchTopComments(videoId: string): Promise<string[]> {
     .slice(0, 8);
 }
 
-async function proposeTitlesWithOpenAI(
+async function understandSceneWithOpenAI(
   input: SceneFinderInput,
   metadata: SceneFinderAnalysis["metadata"],
   notes: string[],
-) {
-  if (!process.env.OPENAI_API_KEY) return [];
+): Promise<SceneUnderstanding> {
+  if (!process.env.OPENAI_API_KEY) return { titles: [] };
 
   const prompt = [
-    "You identify Japanese and international movies, TV dramas, and anime from YouTube Shorts clues.",
-    "Return only JSON: {\"titles\":[\"title 1\",\"title 2\"]}.",
-    "Use Japanese official titles when likely. Do not include YouTuber names, generic hashtags, or channel names.",
+    "You classify YouTube Shorts and identify Japanese/international movies, TV dramas, and anime from clues.",
+    "Return only JSON in this exact shape:",
+    "{\"classification\":{\"isTarget\":true,\"label\":\"映画|ドラマ|アニメ|YouTuber動画|バラエティ|ニュース|TikTokオリジナル|音楽|スポーツ|その他\",\"confidence\":0,\"reason\":\"short reason\"},\"titles\":[\"title 1\",\"title 2\"]}",
+    "Target content is only movie, TV drama, or anime. Exclude news, variety shows, YouTuber videos, music videos, sports, TikTok originals, and unrelated clips.",
+    "Use Japanese official titles when likely. Do not include YouTuber names, generic hashtags, or channel names as titles.",
     `YouTube title: ${metadata.title ?? ""}`,
     `Description: ${(metadata.description ?? "").slice(0, 1200)}`,
     `User supplied hint: ${(metadata.manualHint ?? "").slice(0, 800)}`,
@@ -316,7 +376,7 @@ async function proposeTitlesWithOpenAI(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+        model: process.env.OPENAI_MODEL ?? "gpt-5-mini",
         input: [{ role: "user", content }],
         temperature: 0.1,
       }),
@@ -324,7 +384,7 @@ async function proposeTitlesWithOpenAI(
 
     if (!response.ok) {
       notes.push("OpenAI解析に失敗しました。APIキー、モデル名、画像形式を確認してください。");
-      return [];
+      return { titles: [] };
     }
 
     const data = await response.json();
@@ -337,12 +397,15 @@ async function proposeTitlesWithOpenAI(
         .join("\n");
 
     const parsed = JSON.parse(extractJson(outputText ?? "{}"));
-    return Array.isArray(parsed.titles)
+    const titles = Array.isArray(parsed.titles)
       ? parsed.titles.map((title: unknown) => String(title).trim()).filter(Boolean).slice(0, 5)
       : [];
+    const classification = parseClassification(parsed.classification);
+
+    return { titles, classification };
   } catch {
     notes.push("OpenAI解析のレスポンスを候補化できませんでした。");
-    return [];
+    return { titles: [] };
   }
 }
 
@@ -363,6 +426,111 @@ function buildSearchQueries(metadata: SceneFinderAnalysis["metadata"], aiTitles:
     .map((value) => value.trim())
     .filter((value) => value.length >= 2 && value.length <= 48)
     .slice(0, 12);
+}
+
+function classifyWithHeuristics(metadata: SceneFinderAnalysis["metadata"]): SceneFinderClassification {
+  const text = normalizeForClassification(
+    [metadata.title, metadata.description, metadata.manualHint, ...metadata.tags, ...metadata.topComments].join(" "),
+  );
+
+  const excludedRules: Array<[SceneFinderContentLabel, RegExp, string]> = [
+    ["ニュース", /(ニュース|速報|記者会見|政治|事件|事故|news|breaking)/i, "ニュース系の語が強く出ています。"],
+    ["バラエティ", /(バラエティ|ドッキリ|水曜日のダウンタウン|アメトーーク|しゃべくり|有吉|芸人|漫才|コント)/i, "バラエティ/お笑い番組の語が見つかりました。"],
+    ["YouTuber動画", /(youtuber|ユーチューバー|vlog|検証してみた|やってみた|購入品|ルーティン|チャンネル登録|切り抜きチャンネル)/i, "YouTuber動画らしい語が見つかりました。"],
+    ["TikTokオリジナル", /(tiktok|ティックトック|踊ってみた|dance challenge|チャレンジ動画)/i, "TikTokオリジナル/チャレンジ動画らしい語が見つかりました。"],
+    ["音楽", /(official video|music video|mv|歌ってみた|踊ってみた|ライブ映像|lyrics|remaster|cover song)/i, "音楽動画らしい語が見つかりました。"],
+    ["スポーツ", /(サッカー|野球|nba|mlb|jリーグ|ゴール集|ハイライト|試合|スポーツ)/i, "スポーツ映像らしい語が見つかりました。"],
+  ];
+
+  for (const [label, pattern, reason] of excludedRules) {
+    if (pattern.test(text)) {
+      return {
+        isTarget: false,
+        label,
+        confidence: 82,
+        reason,
+        source: "heuristic",
+      };
+    }
+  }
+
+  const targetRules: Array<[SceneFinderContentLabel, RegExp, string]> = [
+    ["アニメ", /(アニメ|anime|声優|第\d+話|話数|season|シーズン|呪術|ワンピース|鬼滅|推しの子|進撃)/i, "アニメ/話数に関する語が見つかりました。"],
+    ["ドラマ", /(ドラマ|韓ドラ|海外ドラマ|netflixシリーズ|シーズン|season|第\d+話|episode|unext|hulu)/i, "ドラマ/シリーズ作品らしい語が見つかりました。"],
+    ["映画", /(映画|movie|film|劇場版|本編|予告編|cinema|prime video|disney\+)/i, "映画作品らしい語が見つかりました。"],
+  ];
+
+  for (const [label, pattern, reason] of targetRules) {
+    if (pattern.test(text)) {
+      return {
+        isTarget: true,
+        label,
+        confidence: 72,
+        reason,
+        source: "heuristic",
+      };
+    }
+  }
+
+  return {
+    isTarget: false,
+    label: "その他",
+    confidence: 55,
+    reason: "作品系かどうかを判断できる強い語がまだありません。",
+    source: "heuristic",
+  };
+}
+
+function parseClassification(value: unknown): SceneFinderClassification | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const item = value as Partial<SceneFinderClassification>;
+  const label = parseContentLabel(item.label);
+  if (!label) return undefined;
+
+  return {
+    isTarget: Boolean(item.isTarget) && ["映画", "ドラマ", "アニメ"].includes(label),
+    label,
+    confidence: clampConfidence(Number(item.confidence)),
+    reason: typeof item.reason === "string" ? item.reason.slice(0, 140) : "AIが分類しました。",
+    source: "openai",
+  };
+}
+
+function parseContentLabel(value: unknown): SceneFinderContentLabel | undefined {
+  const labels: SceneFinderContentLabel[] = [
+    "映画",
+    "ドラマ",
+    "アニメ",
+    "YouTuber動画",
+    "バラエティ",
+    "ニュース",
+    "TikTokオリジナル",
+    "音楽",
+    "スポーツ",
+    "その他",
+  ];
+
+  return labels.find((label) => label === value);
+}
+
+function findStrongWorkHint(queries: string[]) {
+  for (const item of localCatalog) {
+    const matched = queries.some((query) => {
+      const normalizedQuery = normalize(query);
+      return (
+        normalize(item.title).includes(normalizedQuery) ||
+        normalizedQuery.includes(normalize(item.title)) ||
+        item.aliases.some((alias) => normalizedQuery.includes(normalize(alias)))
+      );
+    });
+
+    if (matched) {
+      return item;
+    }
+  }
+
+  return undefined;
 }
 
 function extractLikelyTitles(value: string) {
@@ -574,6 +742,15 @@ function buildWatchUrl(title: string) {
 
 function normalize(value: string) {
   return value.toLowerCase().replace(/\s+/g, "").replace(/[・:：!！?？\-ー＿_]/g, "");
+}
+
+function normalizeForClassification(value: string) {
+  return value.toLowerCase().replace(/[＃#]/g, " ").replace(/\s+/g, " ");
+}
+
+function clampConfidence(value: number) {
+  if (Number.isNaN(value)) return 50;
+  return Math.min(99, Math.max(1, Math.round(value)));
 }
 
 function uniqueStrings(values: string[]) {

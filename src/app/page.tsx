@@ -171,6 +171,7 @@ export default function Home() {
   const active = candidates[Math.min(selected, candidates.length - 1)];
   const topTitle = analysis?.candidates[0]?.title ?? "今際の国のアリス";
   const topProvider = analysis?.candidates[0]?.providers[0] ?? "Netflix";
+  const classification = analysis?.classification;
 
   const rankingItems = useMemo(() => {
     const counts = new Map<
@@ -470,6 +471,30 @@ export default function Home() {
                 </div>
 
                 <div className="space-y-3">
+                  {classification ? (
+                    <div
+                      className={`rounded-3xl p-4 ${
+                        classification.isTarget
+                          ? "bg-emerald-50 text-emerald-950"
+                          : "bg-amber-50 text-amber-950"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">
+                            {classification.isTarget ? "解析対象" : "対象外かも"}: {classification.label}
+                          </p>
+                          <p className="mt-1 text-xs opacity-62">
+                            {classification.reason}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm">
+                          {classification.confidence}%
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {(analysis?.signals ?? [
                     {
                       label: "YouTubeメタデータ",
@@ -721,6 +746,35 @@ export default function Home() {
                     <Icon size={17} />
                     {label as string}
                   </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] bg-white p-5 shadow-sm shadow-black/5">
+              <div className="mb-4">
+                <p className="text-sm font-semibold">API接続</p>
+                <p className="mt-1 text-xs text-black/45">キーを入れるほど解析材料が増えます</p>
+              </div>
+
+              <div className="space-y-2">
+                {[
+                  ["YouTube", analysis?.apiStatus.youtube, "概要欄・タグ・上位コメント"],
+                  ["OpenAI", analysis?.apiStatus.openai, "対象判定・スクショ理解"],
+                  ["TMDB", analysis?.apiStatus.tmdb, "作品DB・日本の配信候補"],
+                ].map(([label, enabled, detail]) => (
+                  <div key={label as string} className="flex items-center justify-between gap-3 rounded-2xl bg-[#f7f7f4] p-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">{label as string}</p>
+                      <p className="truncate text-xs text-black/42">{detail as string}</p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        enabled ? "bg-emerald-100 text-emerald-800" : "bg-black/6 text-black/38"
+                      }`}
+                    >
+                      {enabled ? "有効" : "未設定"}
+                    </span>
+                  </div>
                 ))}
               </div>
             </section>
