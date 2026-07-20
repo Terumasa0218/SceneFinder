@@ -1,6 +1,7 @@
 export type SceneFinderInput = {
   url: string;
   imageDataUrl?: string;
+  manualHint?: string;
 };
 
 export type SceneFinderSignal = {
@@ -34,6 +35,7 @@ export type SceneFinderAnalysis = {
     authorName?: string;
     thumbnailUrl?: string;
     description?: string;
+    manualHint?: string;
     tags: string[];
     topComments: string[];
   };
@@ -167,6 +169,7 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     authorName: oembed?.author_name,
     thumbnailUrl: oembed?.thumbnail_url,
     description: youtubeSnippet?.description,
+    manualHint: input.manualHint,
     tags: youtubeSnippet?.tags ?? [],
     topComments,
   };
@@ -187,6 +190,12 @@ export async function analyzeScene(input: SceneFinderInput): Promise<SceneFinder
     label: "スクリーンショット",
     value: input.imageDataUrl ? "Vision候補抽出に利用" : "未追加",
     status: input.imageDataUrl ? "ok" : "missing",
+  });
+
+  signals.push({
+    label: "手入力ヒント",
+    value: input.manualHint ? "コメント欄や字幕メモを利用" : "未追加",
+    status: input.manualHint ? "ok" : "missing",
   });
 
   const aiTitles = await proposeTitlesWithOpenAI(input, metadata, notes);
@@ -288,6 +297,7 @@ async function proposeTitlesWithOpenAI(
     "Use Japanese official titles when likely. Do not include YouTuber names, generic hashtags, or channel names.",
     `YouTube title: ${metadata.title ?? ""}`,
     `Description: ${(metadata.description ?? "").slice(0, 1200)}`,
+    `User supplied hint: ${(metadata.manualHint ?? "").slice(0, 800)}`,
     `Tags: ${metadata.tags.join(", ")}`,
     `Top comments: ${metadata.topComments.join(" / ")}`,
   ].join("\n");
@@ -341,6 +351,7 @@ function buildSearchQueries(metadata: SceneFinderAnalysis["metadata"], aiTitles:
     ...aiTitles,
     metadata.title,
     metadata.description,
+    metadata.manualHint,
     ...metadata.tags,
     ...metadata.topComments,
   ].filter(Boolean) as string[];
@@ -376,6 +387,7 @@ function cleanQuery(value: string) {
     .replace(/https?:\/\/\S+/g, "")
     .replace(/\b(shorts?|youtube|tiktok|reels?)\b/gi, "")
     .replace(/[?？!！]/g, "")
+    .replace(/(コメント欄に|コメントで|作品名は|タイトルは|って書かれていた|と書かれていた|って書いてあった|と書いてあった|らしい|かも|です|だと思う)/g, "")
     .replace(
       /(映画|ドラマ|アニメ|切り抜き|名シーン|神シーン|ネタバレ|おすすめ|考察|解説|公式|予告|short|shorts|Netflix|U-NEXT|Prime Video|Disney\+|Hulu|ABEMA|DMM TV)/gi,
       "",

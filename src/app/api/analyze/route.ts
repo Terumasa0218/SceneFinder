@@ -8,8 +8,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const url = typeof body.url === "string" ? body.url.trim() : "";
     const imageDataUrl = typeof body.imageDataUrl === "string" ? body.imageDataUrl : undefined;
+    const manualHint = typeof body.manualHint === "string" ? body.manualHint.trim() : undefined;
 
-    const analysis = await analyzeScene({ url, imageDataUrl });
+    const analysis = await analyzeScene({ url, imageDataUrl, manualHint });
     return NextResponse.json(analysis);
   } catch (error) {
     return NextResponse.json(

@@ -6,9 +6,12 @@ The current implementation does not download, store, or redistribute YouTube vid
 
 - YouTube public oEmbed metadata
 - YouTube Data API metadata, tags, and top comments when `YOUTUBE_API_KEY` is set
+- Manual hints copied from comments or subtitles
 - Screenshot-based title hints when `OPENAI_API_KEY` is set
 - TMDB title search and Japan watch-provider candidates when `TMDB_API_KEY` is set
 - A small local fallback catalog for early UI testing
+
+The Web MVP also stores recent analysis results in browser local storage and shows a device-local title ranking. This is a prototype for future anonymized aggregate trend analytics.
 
 ## Run Locally
 

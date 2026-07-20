@@ -17,6 +17,8 @@ import {
   Sparkles,
   Star,
   Tv,
+  Trophy,
+  TrendingUp,
   Upload,
   X,
 } from "lucide-react";
@@ -25,6 +27,17 @@ import type { SceneFinderAnalysis, SceneFinderCandidate } from "@/lib/scenefinde
 
 type Result = SceneFinderCandidate & {
   accent: string;
+};
+
+type AnalysisHistoryItem = {
+  id: string;
+  url: string;
+  title: string;
+  type: string;
+  episode: string;
+  confidence: number;
+  providers: string[];
+  analyzedAt: string;
 };
 
 const fallbackCandidates: Result[] = [
@@ -110,9 +123,11 @@ export default function Home() {
   const [mode, setMode] = useState<"quick" | "deep">("quick");
   const [saved, setSaved] = useState(true);
   const [url, setUrl] = useState("https://youtube.com/shorts/example");
+  const [manualHint, setManualHint] = useState("");
   const [imageDataUrl, setImageDataUrl] = useState<string>();
   const [imageName, setImageName] = useState<string>();
   const [analysis, setAnalysis] = useState<SceneFinderAnalysis>();
+  const [historyItems, setHistoryItems] = useState<AnalysisHistoryItem[]>(() => loadStoredHistory());
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -145,6 +160,36 @@ export default function Home() {
   const topTitle = analysis?.candidates[0]?.title ?? "今際の国のアリス";
   const topProvider = analysis?.candidates[0]?.providers[0] ?? "Netflix";
 
+  const rankingItems = useMemo(() => {
+    const counts = new Map<
+      string,
+      {
+        title: string;
+        count: number;
+        type: string;
+        providers: string[];
+        bestConfidence: number;
+      }
+    >();
+
+    for (const item of historyItems) {
+      const current = counts.get(item.title) ?? {
+        title: item.title,
+        count: 0,
+        type: item.type,
+        providers: item.providers,
+        bestConfidence: 0,
+      };
+
+      current.count += 1;
+      current.bestConfidence = Math.max(current.bestConfidence, item.confidence);
+      current.providers = current.providers.length ? current.providers : item.providers;
+      counts.set(item.title, current);
+    }
+
+    return [...counts.values()].sort((a, b) => b.count - a.count || b.bestConfidence - a.bestConfidence).slice(0, 5);
+  }, [historyItems]);
+
   const confidenceText = useMemo(() => {
     if (active.confidence >= 85) return "かなり有力";
     if (active.confidence >= 70) return "要確認";
@@ -159,7 +204,7 @@ export default function Home() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, imageDataUrl }),
+        body: JSON.stringify({ url, imageDataUrl, manualHint }),
       });
 
       const data = await response.json();
@@ -168,7 +213,9 @@ export default function Home() {
         throw new Error(data.message ?? "解析に失敗しました。");
       }
 
-      setAnalysis(data);
+      const nextAnalysis = data as SceneFinderAnalysis;
+      setAnalysis(nextAnalysis);
+      recordAnalysis(nextAnalysis);
       setSelected(0);
       setMode("deep");
     } catch (caught) {
@@ -176,6 +223,29 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
+  }
+
+  function recordAnalysis(nextAnalysis: SceneFinderAnalysis) {
+    const topCandidate = nextAnalysis.candidates[0];
+    if (!topCandidate) return;
+
+    const nextItem: AnalysisHistoryItem = {
+      id: `${nextAnalysis.videoId}-${Date.now()}`,
+      url,
+      title: topCandidate.title,
+      type: topCandidate.type,
+      episode: `${topCandidate.season} / ${topCandidate.episode}`,
+      confidence: topCandidate.confidence,
+      providers: topCandidate.providers,
+      analyzedAt: new Date().toISOString(),
+    };
+
+    setHistoryItems((current) => {
+      const deduped = current.filter((item) => item.url !== url || item.title !== topCandidate.title);
+      const nextItems = [nextItem, ...deduped].slice(0, 50);
+      window.localStorage.setItem("scenefinder-history", JSON.stringify(nextItems));
+      return nextItems;
+    });
   }
 
   function handleImageUpload(file: File | undefined) {
@@ -258,6 +328,17 @@ export default function Home() {
                     {isAnalyzing ? "解析中" : mode === "quick" ? "あとで解析" : "今すぐ判定"}
                   </button>
                 </div>
+
+                <label className="mt-3 block rounded-2xl bg-white/10 p-3">
+                  <span className="text-xs font-medium text-white/55">コメント欄・字幕ヒント</span>
+                  <textarea
+                    className="mt-2 min-h-20 w-full resize-none bg-transparent text-sm leading-6 text-white outline-none placeholder:text-white/32"
+                    placeholder="例: コメントに「涙の女王」って書かれていた / セリフ: ここが私の世界..."
+                    value={manualHint}
+                    onChange={(event) => setManualHint(event.target.value)}
+                    aria-label="コメント欄や字幕のヒント"
+                  />
+                </label>
 
                 {error ? (
                   <p className="mt-3 rounded-2xl bg-red-500/14 px-4 py-3 text-sm text-red-100">{error}</p>
@@ -352,6 +433,11 @@ export default function Home() {
                       label: "スクリーンショット",
                       value: imageName ?? "未追加",
                       status: imageName ? "ok" : "missing",
+                    },
+                    {
+                      label: "手入力ヒント",
+                      value: manualHint ? "入力済み" : "未追加",
+                      status: manualHint ? "ok" : "missing",
                     },
                   ]).map((signal, index) => (
                     <div key={`${signal.label}-${index}`} className="flex items-center gap-3 rounded-2xl bg-[#f6f6f2] p-3">
@@ -551,7 +637,7 @@ export default function Home() {
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-sm font-semibold">最近解析</p>
-                  <p className="mt-1 text-xs text-black/45">日付順で保存</p>
+                  <p className="mt-1 text-xs text-black/45">この端末に保存</p>
                 </div>
                 <button className="grid size-8 place-items-center rounded-full bg-black/5" aria-label="一覧へ">
                   <ChevronRight size={17} />
@@ -559,22 +645,73 @@ export default function Home() {
               </div>
 
               <div className="space-y-3">
-                {recentItems.map((item) => (
-                  <article key={item.title} className="flex gap-3 rounded-3xl bg-[#f8f8f4] p-3">
-                    <div className={`grid size-16 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${item.tone} text-white`}>
-                      {item.title.includes("呪術") ? <Tv size={22} /> : <Film size={22} />}
+                {(historyItems.length ? historyItems.slice(0, 4) : recentItems).map((item, index) => (
+                  <article key={`${item.title}-${index}`} className="flex gap-3 rounded-3xl bg-[#f8f8f4] p-3">
+                    <div className={`grid size-16 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${"tone" in item ? item.tone : accents[index % accents.length]} text-white`}>
+                      {item.title.includes("呪術") || ("type" in item && item.type === "アニメ") ? <Tv size={22} /> : <Film size={22} />}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold">{item.title}</p>
-                      <p className="mt-1 truncate text-xs text-black/45">{item.episode}</p>
+                      <p className="mt-1 truncate text-xs text-black/45">
+                        {"episode" in item ? item.episode : ""}
+                      </p>
                       <div className="mt-3 flex items-center justify-between gap-2">
-                        <span className="truncate text-xs font-semibold text-black/50">{item.service}</span>
-                        <span className="shrink-0 text-xs text-black/35">{item.savedAt}</span>
+                        <span className="truncate text-xs font-semibold text-black/50">
+                          {"service" in item ? item.service : item.providers.join(" / ") || "配信先未特定"}
+                        </span>
+                        <span className="shrink-0 text-xs text-black/35">
+                          {"savedAt" in item ? item.savedAt : formatAnalyzedAt(item.analyzedAt)}
+                        </span>
                       </div>
                     </div>
                   </article>
                 ))}
               </div>
+            </section>
+
+            <section className="rounded-[28px] bg-white p-5 shadow-sm shadow-black/5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold">解析ランキング</p>
+                  <p className="mt-1 text-xs text-black/45">よく探された作品</p>
+                </div>
+                <div className="grid size-9 place-items-center rounded-full bg-[#d8ff5f]">
+                  <TrendingUp size={18} />
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {(rankingItems.length ? rankingItems : [
+                  { title: "今際の国のアリス", count: 12, type: "ドラマ", providers: ["Netflix"], bestConfidence: 91 },
+                  { title: "呪術廻戦", count: 8, type: "アニメ", providers: ["U-NEXT"], bestConfidence: 88 },
+                  { title: "涙の女王", count: 5, type: "ドラマ", providers: ["Netflix"], bestConfidence: 82 },
+                ]).map((item, index) => (
+                  <article key={item.title} className="rounded-3xl bg-[#f8f8f4] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className={`grid size-9 shrink-0 place-items-center rounded-full ${
+                          index === 0 ? "bg-black text-white" : "bg-black/7 text-black/55"
+                        }`}>
+                          {index === 0 ? <Trophy size={16} /> : <span className="text-xs font-bold">{index + 1}</span>}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{item.title}</p>
+                          <p className="mt-1 truncate text-xs text-black/45">
+                            {item.type} / {item.providers.join(" / ") || "配信先未特定"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg font-semibold">{item.count}</p>
+                        <p className="text-[11px] text-black/38">解析</p>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <p className="mt-4 text-xs leading-5 text-black/42">
+                将来B2Bに使う場合は、個人を特定しない作品単位の集計だけを扱います。
+              </p>
             </section>
 
             <section className="rounded-[28px] bg-[#111] p-5 text-white shadow-sm shadow-black/5">
@@ -610,4 +747,27 @@ function PosterContent({ active }: { active: Result }) {
       </div>
     </div>
   );
+}
+
+function formatAnalyzedAt(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return new Intl.DateTimeFormat("ja-JP", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function loadStoredHistory(): AnalysisHistoryItem[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const stored = window.localStorage.getItem("scenefinder-history");
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
 }
