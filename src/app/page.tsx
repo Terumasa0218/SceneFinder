@@ -4,6 +4,7 @@ import {
   Bookmark,
   Check,
   ChevronRight,
+  ClipboardList,
   Clock3,
   Clapperboard,
   Film,
@@ -12,6 +13,7 @@ import {
   Link2,
   Loader2,
   Play,
+  Plus,
   Search,
   Share2,
   Sparkles,
@@ -48,6 +50,19 @@ type AccuracyFeedbackItem = {
   wasCorrect: boolean;
   confidence: number;
   createdAt: string;
+};
+
+type ValidationQueueItem = {
+  id: string;
+  url: string;
+  manualHint: string;
+  status: "pending" | "analyzing" | "analyzed" | "failed";
+  isTarget?: boolean;
+  label?: string;
+  predictedTitle?: string;
+  confidence?: number;
+  error?: string;
+  analyzedAt?: string;
 };
 
 const fallbackCandidates: Result[] = [
@@ -139,6 +154,8 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<SceneFinderAnalysis>();
   const [historyItems, setHistoryItems] = useState<AnalysisHistoryItem[]>(() => loadStoredHistory());
   const [feedbackItems, setFeedbackItems] = useState<AccuracyFeedbackItem[]>(() => loadStoredFeedback());
+  const [validationItems, setValidationItems] = useState<ValidationQueueItem[]>(() => loadStoredValidationQueue());
+  const [validationInput, setValidationInput] = useState("");
   const [correctTitle, setCorrectTitle] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string>();
@@ -220,26 +237,22 @@ export default function Home() {
     return { total, correct, accuracy, averageConfidence };
   }, [feedbackItems]);
 
+  const validationStats = useMemo(() => {
+    const total = validationItems.length;
+    const analyzed = validationItems.filter((item) => item.status === "analyzed").length;
+    const targets = validationItems.filter((item) => item.isTarget).length;
+    const pending = validationItems.filter((item) => item.status === "pending").length;
+
+    return { total, analyzed, targets, pending };
+  }, [validationItems]);
+
   async function handleAnalyze() {
     setIsAnalyzing(true);
     setError(undefined);
 
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, imageDataUrl, manualHint }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.ok) {
-        throw new Error(data.message ?? "解析に失敗しました。");
-      }
-
-      const nextAnalysis = data as SceneFinderAnalysis;
-      setAnalysis(nextAnalysis);
-      recordAnalysis(nextAnalysis);
+      const nextAnalysis = await requestAnalysis(url, manualHint, imageDataUrl);
+      applyAnalysis(nextAnalysis, url);
       setCorrectTitle(nextAnalysis.candidates[0]?.title ?? "");
       setSelected(0);
       setMode("deep");
@@ -250,13 +263,38 @@ export default function Home() {
     }
   }
 
-  function recordAnalysis(nextAnalysis: SceneFinderAnalysis) {
+  async function requestAnalysis(targetUrl: string, targetManualHint = "", targetImageDataUrl?: string) {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: targetUrl,
+        imageDataUrl: targetImageDataUrl,
+        manualHint: targetManualHint,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message ?? "解析に失敗しました。");
+    }
+
+    return data as SceneFinderAnalysis;
+  }
+
+  function applyAnalysis(nextAnalysis: SceneFinderAnalysis, sourceUrl: string) {
+    setAnalysis(nextAnalysis);
+    recordAnalysis(nextAnalysis, sourceUrl);
+  }
+
+  function recordAnalysis(nextAnalysis: SceneFinderAnalysis, sourceUrl: string) {
     const topCandidate = nextAnalysis.candidates[0];
     if (!topCandidate) return;
 
     const nextItem: AnalysisHistoryItem = {
       id: `${nextAnalysis.videoId}-${Date.now()}`,
-      url,
+      url: sourceUrl,
       title: topCandidate.title,
       type: topCandidate.type,
       episode: `${topCandidate.season} / ${topCandidate.episode}`,
@@ -266,7 +304,7 @@ export default function Home() {
     };
 
     setHistoryItems((current) => {
-      const deduped = current.filter((item) => item.url !== url || item.title !== topCandidate.title);
+      const deduped = current.filter((item) => item.url !== sourceUrl || item.title !== topCandidate.title);
       const nextItems = [nextItem, ...deduped].slice(0, 50);
       window.localStorage.setItem("scenefinder-history", JSON.stringify(nextItems));
       return nextItems;
@@ -299,6 +337,101 @@ export default function Home() {
       window.localStorage.setItem("scenefinder-feedback", JSON.stringify(nextItems));
       return nextItems;
     });
+  }
+
+  function addValidationUrls() {
+    const urls = extractUrls(validationInput);
+    if (!urls.length) {
+      setError("検証するYouTube Shorts URLを入力してください。");
+      return;
+    }
+
+    setError(undefined);
+
+    setValidationItems((current) => {
+      const known = new Set(current.map((item) => item.url));
+      const nextItems = [
+        ...current,
+        ...urls
+          .filter((itemUrl) => !known.has(itemUrl))
+          .map((itemUrl) => ({
+            id: `validation-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            url: itemUrl,
+            manualHint: "",
+            status: "pending" as const,
+          })),
+      ].slice(0, 30);
+
+      window.localStorage.setItem("scenefinder-validation-queue", JSON.stringify(nextItems));
+      return nextItems;
+    });
+    setValidationInput("");
+  }
+
+  async function analyzeValidationItem(item: ValidationQueueItem) {
+    setValidationItems((current) =>
+      persistValidationQueue(
+        current.map((currentItem) =>
+          currentItem.id === item.id ? { ...currentItem, status: "analyzing", error: undefined } : currentItem,
+        ),
+      ),
+    );
+
+    try {
+      const nextAnalysis = await requestAnalysis(item.url, item.manualHint);
+      const topCandidate = nextAnalysis.candidates[0];
+      applyAnalysis(nextAnalysis, item.url);
+      setUrl(item.url);
+      setManualHint(item.manualHint);
+      setCorrectTitle(topCandidate?.title ?? "");
+      setSelected(0);
+      setMode("deep");
+
+      setValidationItems((current) =>
+        persistValidationQueue(
+          current.map((currentItem) =>
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  status: "analyzed",
+                  isTarget: nextAnalysis.classification.isTarget,
+                  label: nextAnalysis.classification.label,
+                  predictedTitle: topCandidate?.title ?? "候補なし",
+                  confidence: topCandidate?.confidence ?? nextAnalysis.classification.confidence,
+                  error: undefined,
+                  analyzedAt: new Date().toISOString(),
+                }
+              : currentItem,
+          ),
+        ),
+      );
+    } catch (caught) {
+      setValidationItems((current) =>
+        persistValidationQueue(
+          current.map((currentItem) =>
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  status: "failed",
+                  error: caught instanceof Error ? caught.message : "解析に失敗しました。",
+                }
+              : currentItem,
+          ),
+        ),
+      );
+    }
+  }
+
+  function updateValidationHint(itemId: string, nextHint: string) {
+    setValidationItems((current) =>
+      persistValidationQueue(
+        current.map((item) => (item.id === itemId ? { ...item, manualHint: nextHint } : item)),
+      ),
+    );
+  }
+
+  function removeValidationItem(itemId: string) {
+    setValidationItems((current) => persistValidationQueue(current.filter((item) => item.id !== itemId)));
   }
 
   function handleImageUpload(file: File | undefined) {
@@ -455,6 +588,133 @@ export default function Home() {
                 </div>
               </div>
             </div>
+
+            <section className="rounded-[28px] bg-white p-5 shadow-sm shadow-black/5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">検証リスト</p>
+                  <p className="mt-1 text-xs text-black/45">
+                    実Shortsをためて、対象判定とタイトル推定を1本ずつ確認
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  {[
+                    ["合計", validationStats.total],
+                    ["解析済", validationStats.analyzed],
+                    ["対象", validationStats.targets],
+                    ["未処理", validationStats.pending],
+                  ].map(([label, value]) => (
+                    <div key={label as string} className="rounded-2xl bg-[#f7f7f4] px-3 py-2 text-center">
+                      <p className="text-sm font-semibold">{value as number}</p>
+                      <p className="text-[11px] text-black/42">{label as string}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                <label className="block rounded-3xl bg-[#f6f6f2] p-4">
+                  <span className="flex items-center gap-2 text-xs font-semibold text-black/48">
+                    <ClipboardList size={15} />
+                    Shorts URLを複数貼り付け
+                  </span>
+                  <textarea
+                    className="mt-3 min-h-24 w-full resize-none bg-transparent text-sm leading-6 outline-none placeholder:text-black/35"
+                    placeholder="https://youtube.com/shorts/...\nhttps://youtu.be/..."
+                    value={validationInput}
+                    onChange={(event) => setValidationInput(event.target.value)}
+                    aria-label="検証用URLリスト"
+                  />
+                </label>
+                <button
+                  onClick={addValidationUrls}
+                  className="inline-flex min-h-14 items-center justify-center gap-2 rounded-3xl bg-black px-5 text-sm font-semibold text-white transition hover:bg-black/82 md:min-w-32"
+                >
+                  <Plus size={18} />
+                  追加
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                {(validationItems.length ? validationItems : [
+                  {
+                    id: "sample-validation",
+                    url: "https://youtube.com/shorts/example",
+                    manualHint: "コメント欄に作品名があればここにメモ",
+                    status: "pending" as const,
+                  },
+                ]).slice(0, 8).map((item) => (
+                  <article key={item.id} className="rounded-3xl border border-black/6 bg-[#fbfbf8] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{item.url}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                              item.status === "analyzed"
+                                ? item.isTarget
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-amber-100 text-amber-800"
+                                : item.status === "failed"
+                                  ? "bg-rose-100 text-rose-800"
+                                  : "bg-black/6 text-black/45"
+                            }`}
+                          >
+                            {validationStatusText(item)}
+                          </span>
+                          {item.label ? (
+                            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-black/48">
+                              {item.label}
+                            </span>
+                          ) : null}
+                          {typeof item.confidence === "number" ? (
+                            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-black/48">
+                              {item.confidence}%
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                      {validationItems.length ? (
+                        <button
+                          onClick={() => removeValidationItem(item.id)}
+                          className="grid size-8 shrink-0 place-items-center rounded-full bg-black/5 text-black/45 transition hover:bg-black hover:text-white"
+                          aria-label="検証URLを削除"
+                        >
+                          <X size={15} />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <input
+                      className="mt-3 h-10 w-full rounded-2xl bg-white px-3 text-xs outline-none placeholder:text-black/32"
+                      placeholder="コメント欄や字幕ヒント"
+                      value={item.manualHint}
+                      onChange={(event) => updateValidationHint(item.id, event.target.value)}
+                      disabled={!validationItems.length}
+                      aria-label="検証用ヒント"
+                    />
+
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      <p className="min-w-0 truncate text-xs text-black/48">
+                        {item.predictedTitle
+                          ? `予測: ${item.predictedTitle}`
+                          : item.error
+                            ? item.error
+                            : "未解析"}
+                      </p>
+                      <button
+                        onClick={() => analyzeValidationItem(item)}
+                        disabled={!validationItems.length || item.status === "analyzing"}
+                        className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-2xl bg-[#d8ff5f] px-3 text-xs font-semibold text-black transition hover:bg-[#c7f34b] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {item.status === "analyzing" ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                        解析
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
 
             <div className="grid gap-4 md:grid-cols-[310px_minmax(0,1fr)]">
               <section className="rounded-[28px] bg-white p-5 shadow-sm shadow-black/5">
@@ -984,4 +1244,35 @@ function loadStoredFeedback(): AccuracyFeedbackItem[] {
   } catch {
     return [];
   }
+}
+
+function loadStoredValidationQueue(): ValidationQueueItem[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const stored = window.localStorage.getItem("scenefinder-validation-queue");
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistValidationQueue(items: ValidationQueueItem[]) {
+  window.localStorage.setItem("scenefinder-validation-queue", JSON.stringify(items));
+  return items;
+}
+
+function extractUrls(value: string) {
+  const matches = value.match(/https?:\/\/[^\s]+/g) ?? [];
+
+  return [...new Set(matches.map((url) => url.trim().replace(/[),.。]+$/g, "")))]
+    .filter((url) => url.includes("youtube.com") || url.includes("youtu.be"))
+    .slice(0, 20);
+}
+
+function validationStatusText(item: ValidationQueueItem) {
+  if (item.status === "analyzing") return "解析中";
+  if (item.status === "failed") return "失敗";
+  if (item.status === "analyzed") return item.isTarget ? "対象" : "対象外";
+  return "未処理";
 }

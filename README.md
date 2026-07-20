@@ -16,6 +16,8 @@ The Web MVP also stores recent analysis results in browser local storage and sho
 
 For precision work, users can mark the top candidate as correct or incorrect and enter the correct title. That feedback is stored locally for now and can later become the seed data for scoring and evaluation.
 
+The validation queue lets you paste multiple Shorts URLs, analyze them one by one, and compare target classification plus predicted title across a small test set.
+
 ## Precision Loop
 
 The next evaluation loop is:
