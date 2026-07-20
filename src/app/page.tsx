@@ -40,6 +40,16 @@ type AnalysisHistoryItem = {
   analyzedAt: string;
 };
 
+type AccuracyFeedbackItem = {
+  id: string;
+  url: string;
+  predictedTitle: string;
+  correctTitle: string;
+  wasCorrect: boolean;
+  confidence: number;
+  createdAt: string;
+};
+
 const fallbackCandidates: Result[] = [
   {
     id: "demo-alice",
@@ -128,6 +138,8 @@ export default function Home() {
   const [imageName, setImageName] = useState<string>();
   const [analysis, setAnalysis] = useState<SceneFinderAnalysis>();
   const [historyItems, setHistoryItems] = useState<AnalysisHistoryItem[]>(() => loadStoredHistory());
+  const [feedbackItems, setFeedbackItems] = useState<AccuracyFeedbackItem[]>(() => loadStoredFeedback());
+  const [correctTitle, setCorrectTitle] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -196,6 +208,17 @@ export default function Home() {
     return "参考候補";
   }, [active.confidence]);
 
+  const qualityStats = useMemo(() => {
+    const total = feedbackItems.length;
+    const correct = feedbackItems.filter((item) => item.wasCorrect).length;
+    const accuracy = total ? Math.round((correct / total) * 100) : 0;
+    const averageConfidence = total
+      ? Math.round(feedbackItems.reduce((sum, item) => sum + item.confidence, 0) / total)
+      : 0;
+
+    return { total, correct, accuracy, averageConfidence };
+  }, [feedbackItems]);
+
   async function handleAnalyze() {
     setIsAnalyzing(true);
     setError(undefined);
@@ -216,6 +239,7 @@ export default function Home() {
       const nextAnalysis = data as SceneFinderAnalysis;
       setAnalysis(nextAnalysis);
       recordAnalysis(nextAnalysis);
+      setCorrectTitle(nextAnalysis.candidates[0]?.title ?? "");
       setSelected(0);
       setMode("deep");
     } catch (caught) {
@@ -244,6 +268,34 @@ export default function Home() {
       const deduped = current.filter((item) => item.url !== url || item.title !== topCandidate.title);
       const nextItems = [nextItem, ...deduped].slice(0, 50);
       window.localStorage.setItem("scenefinder-history", JSON.stringify(nextItems));
+      return nextItems;
+    });
+  }
+
+  function recordFeedback(wasCorrect: boolean) {
+    if (!analysis || active.title === "候補なし") return;
+
+    const normalizedCorrectTitle = wasCorrect ? active.title : correctTitle.trim();
+    if (!normalizedCorrectTitle) {
+      setError("違う場合は、正解タイトルを入力してください。");
+      return;
+    }
+
+    setError(undefined);
+
+    const nextItem: AccuracyFeedbackItem = {
+      id: `${analysis.videoId}-${active.id}-${Date.now()}`,
+      url,
+      predictedTitle: active.title,
+      correctTitle: normalizedCorrectTitle,
+      wasCorrect,
+      confidence: active.confidence,
+      createdAt: new Date().toISOString(),
+    };
+
+    setFeedbackItems((current) => {
+      const nextItems = [nextItem, ...current].slice(0, 100);
+      window.localStorage.setItem("scenefinder-feedback", JSON.stringify(nextItems));
       return nextItems;
     });
   }
@@ -575,6 +627,46 @@ export default function Home() {
                         {saved ? "保存済み" : "あとで見る"}
                       </button>
                     </div>
+
+                    {analysis ? (
+                      <div className="rounded-[24px] border border-black/8 bg-white p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold">精度フィードバック</p>
+                            <p className="mt-1 text-xs text-black/45">正解データを貯めてスコアを調整</p>
+                          </div>
+                          <span className="rounded-full bg-black/5 px-3 py-1 text-xs font-semibold text-black/52">
+                            検証 {qualityStats.total}件
+                          </span>
+                        </div>
+                        <label className="mt-3 block">
+                          <span className="text-xs font-medium text-black/45">正解タイトル</span>
+                          <input
+                            className="mt-2 h-11 w-full rounded-2xl bg-[#f6f6f2] px-3 text-sm outline-none placeholder:text-black/35"
+                            value={correctTitle}
+                            onChange={(event) => setCorrectTitle(event.target.value)}
+                            placeholder="違う場合は正しい作品名を入力"
+                            aria-label="正解タイトル"
+                          />
+                        </label>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => recordFeedback(true)}
+                            className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-100 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-200"
+                          >
+                            <Check size={16} />
+                            当たってる
+                          </button>
+                          <button
+                            onClick={() => recordFeedback(false)}
+                            className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-rose-100 text-sm font-semibold text-rose-800 transition hover:bg-rose-200"
+                          >
+                            <X size={16} />
+                            違う
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -629,6 +721,63 @@ export default function Home() {
                     <Icon size={17} />
                     {label as string}
                   </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] bg-white p-5 shadow-sm shadow-black/5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold">精度検証</p>
+                  <p className="mt-1 text-xs text-black/45">手元の正解データ</p>
+                </div>
+                <span className="rounded-full bg-black px-3 py-1 text-xs font-semibold text-white">
+                  {qualityStats.accuracy}%
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-2xl bg-[#f7f7f4] p-3">
+                  <p className="text-2xl font-semibold">{qualityStats.total}</p>
+                  <p className="mt-1 text-xs text-black/42">検証件数</p>
+                </div>
+                <div className="rounded-2xl bg-[#f7f7f4] p-3">
+                  <p className="text-2xl font-semibold">{qualityStats.correct}</p>
+                  <p className="mt-1 text-xs text-black/42">正解</p>
+                </div>
+                <div className="rounded-2xl bg-[#f7f7f4] p-3">
+                  <p className="text-2xl font-semibold">{qualityStats.averageConfidence}</p>
+                  <p className="mt-1 text-xs text-black/42">平均信頼</p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {(feedbackItems.length ? feedbackItems.slice(0, 3) : [
+                  {
+                    id: "sample-feedback-1",
+                    predictedTitle: "今際の国のアリス",
+                    correctTitle: "今際の国のアリス",
+                    wasCorrect: true,
+                    confidence: 91,
+                    url: "",
+                    createdAt: new Date().toISOString(),
+                  },
+                ]).map((item) => (
+                  <article key={item.id} className="rounded-2xl bg-[#f8f8f4] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="truncate text-sm font-semibold">{item.predictedTitle}</p>
+                      <span
+                        className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                          item.wasCorrect ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+                        }`}
+                      >
+                        {item.wasCorrect ? "正解" : "修正"}
+                      </span>
+                    </div>
+                    {!item.wasCorrect ? (
+                      <p className="mt-1 truncate text-xs text-black/45">正解: {item.correctTitle}</p>
+                    ) : null}
+                  </article>
                 ))}
               </div>
             </section>
@@ -766,6 +915,17 @@ function loadStoredHistory(): AnalysisHistoryItem[] {
 
   try {
     const stored = window.localStorage.getItem("scenefinder-history");
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadStoredFeedback(): AccuracyFeedbackItem[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const stored = window.localStorage.getItem("scenefinder-feedback");
     return stored ? JSON.parse(stored) : [];
   } catch {
     return [];

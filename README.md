@@ -13,6 +13,8 @@ The current implementation does not download, store, or redistribute YouTube vid
 
 The Web MVP also stores recent analysis results in browser local storage and shows a device-local title ranking. This is a prototype for future anonymized aggregate trend analytics.
 
+For precision work, users can mark the top candidate as correct or incorrect and enter the correct title. That feedback is stored locally for now and can later become the seed data for scoring and evaluation.
+
 ## Run Locally
 
 ```bash
